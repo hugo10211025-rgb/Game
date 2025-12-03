@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>網頁街機模擬器 (Web Arcade)</title>
+    <!-- 使用 Tailwind CSS 進行樣式設計 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Noto+Sans+TC:wght@400;700&display=swap');
+
+        :root {
+            /* 定義安全區域變數，適配 iPhone 瀏海 */
+            --sat: env(safe-area-inset-top);
+            --sab: env(safe-area-inset-bottom);
+            --sal: env(safe-area-inset-left);
+            --sar: env(safe-area-inset-right);
+        }
+
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Noto Sans TC', sans-serif;
+            overflow-x: hidden; 
+            background-image: 
+                radial-gradient(#1f1f1f 15%, transparent 16%),
+                radial-gradient(#1f1f1f 15%, transparent 16%);
+            background-size: 20px 20px;
+            background-position: 0 0, 10px 10px;
+        }
+
+        .pixel-font {
+            font-family: 'Press Start 2P', cursive;
+        }
+
+        .arcade-screen-container {
+            background: #000;
+            box-shadow: 
+                0 0 15px rgba(0, 0, 0, 0.9),
+                inset 0 0 30px rgba(0,0,0,0.6);
+            border: 4px solid #333;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            aspect-ratio: 16 / 9; 
+            z-index: 10;
+            /* 遊戲區域內禁止選取與預設觸控行為，確保搖桿順暢 */
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: none; 
+        }
+
+        /* === 全螢幕通用樣式 (手動 & 自動橫屏共用) === */
+        /* 使用 fixed + 四邊歸零，達到像影片播放器一樣的滿版效果 */
+        .arcade-screen-container.fullscreen-mode {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            
+            border: none !important;
+            border-radius: 0 !important;
+            margin: 0 !important;
+            z-index: 99999 !important;
+            background: #000 !important;
+            box-shadow: none !important;
+            
+            /* 適配瀏海，避免內容被切掉，但背景保持滿版 */
+            padding-top: var(--sat);
+            padding-bottom: var(--sab);
+            padding-left: var(--sal);
+            padding-right: var(--sar);
+        }
+
+        /* 當進入全螢幕模式時，顯示懸浮退出按鈕 */
+        .fullscreen-mode #floating-exit-btn {
+            display: flex !important;
+        }
+
+        /* 針對橫屏：如果遊戲正在運行，自動套用全螢幕樣式 */
+        @media (orientation: landscape) and (max-width: 900px) {
+            .game-running .arcade-screen-container {
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                right: 0 !important;
+                bottom: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+                
+                z-index: 99999 !important;
+                border-radius: 0 !important;
+                border: none !important;
+                background: #000 !important;
+                
+                /* 確保橫屏時左右有安全距離 */
+                padding-left: var(--sal);
+                padding-right: var(--sar);
+            }
+            
+            /* 橫屏全螢幕時，隱藏網頁其他部分，避免干擾 */
+            .game-running header, 
+            .game-running .control-panel, 
+            .game-running footer {
+                display: none !important;
+            }
+
+            /* 橫屏全螢幕時，強制 body 不可滾動 */
+            .game-running body {
+                overflow: hidden !important;
+                background-color: #000 !important; /* 讓背景全黑，避免滑動時看到縫隙 */
+            }
+
+            /* 橫屏自動全螢幕時也要顯示退出按鈕 */
+            .game-running #floating-exit-btn {
+                display: flex !important;
+            }
+        }
+
+        /* 手動全螢幕時也要鎖定 body 滾動 */
+        body.lock-scroll {
+            overflow: hidden !important;
+        }
+
+        @media (min-width: 768px) {
+            .arcade-screen-container {
+                border: 20px solid #333;
+                border-bottom-width: 40px;
+                border-radius: 10px;
+                min-height: 500px;
+                aspect-ratio: auto;
+            }
+        }
+
+        .scanlines {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.2) 50%,
+                rgba(0,0,0,0.2)
+            );
+            background-size: 100% 4px;
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        #game {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 5;
+        }
+
+        /* 懸浮退出按鈕樣式 - 優化版 */
+        #floating-exit-btn {
+            display: none; /* 預設隱藏 */
+            position: absolute;
+            
+            /* 改為右上角，並使用 max 函數確保不會貼齊螢幕邊緣或被瀏海擋住 */
+            top: max(15px, var(--sat));
+            right: max(15px, var(--sar));
+            left: auto; /* 取消置中 */
+            transform: none; /* 取消置中 */
+            
+            z-index: 100000;
+            background-color: rgba(0, 0, 0, 0.5); /* 更低調的黑色背景 */
+            color: rgba(255, 255, 255, 0.8);
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-family: 'Noto Sans TC', sans-serif;
+            backdrop-filter: blur(4px);
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            pointer-events: auto;
+            
+            /* 預設半透明，避免干擾遊戲畫面 */
+            opacity: 0.3;
+            transition: opacity 0.3s;
+        }
+        
+        /* 只有在按下或滑鼠經過時才變亮 */
+        #floating-exit-btn:active, 
+        #floating-exit-btn:hover {
+            background-color: rgba(220, 38, 38, 0.8); /* 按下變紅 */
+            opacity: 1;
+            color: white;
+        }
+
+        .control-panel {
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+        }
+
+        @media (min-width: 768px) {
+            .control-panel {
+                background: #222;
+                border-top: 4px solid #444;
+                box-shadow: inset 0 10px 20px rgba(0,0,0,0.5);
+            }
+        }
+
+        input[type="file"]::file-selector-button {
+            background-color: #db2777;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: 'Noto Sans TC', sans-serif;
+            font-weight: bold;
+            transition: background .3s;
+            margin-right: 12px;
+            font-size: 0.8rem;
+        }
+        
+        select {
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+            background-position: right 0.5rem center;
+            background-repeat: no-repeat;
+            background-size: 1.5em 1.5em;
+            padding-right: 2.5rem;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center">
+
+    <header class="w-full p-3 md:p-4 bg-black/90 backdrop-blur-sm border-b border-gray-800 sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto flex flex-row justify-between items-center">
+            <h1 class="text-xl md:text-3xl text-yellow-400 pixel-font tracking-tighter truncate">
+                ARCADE<span class="text-pink-500">EMU</span>
+            </h1>
+            <button id="fullscreen-btn" class="md:hidden bg-gray-800 text-white px-3 py-1 rounded border border-gray-600 text-xs shadow-lg active:bg-gray-700">
+                全螢幕模式
+            </button>
+        </div>
+    </header>
+
+    <main class="w-full max-w-5xl p-2 md:p-4 flex-grow flex flex-col gap-4">
+        
+        <!-- 螢幕容器 -->
+        <div class="w-full arcade-screen-container relative group" id="screen-wrapper">
+            <!-- 掃描線特效 -->
+            <div class="scanlines opacity-50 pointer-events-none"></div>
+
+            <!-- 懸浮退出按鈕 (全螢幕時顯示) -->
+            <button id="floating-exit-btn">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                退出全螢幕
+            </button>
+            
+            <!-- 初始提示畫面 -->
+            <div id="placeholder-screen" class="absolute inset-0 flex flex-col items-center justify-center text-center p-4 z-30 bg-black/90">
+                <div class="mb-4 md:mb-6 animate-pulse text-gray-600">
+                    <svg class="w-16 h-16 md:w-24 md:h-24 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <h2 class="text-lg md:text-2xl font-bold text-white mb-2">準備開始遊戲</h2>
+                <div class="text-sm text-gray-400 mb-4 max-w-md">
+                    <p>請選擇下方 <span class="text-yellow-400">內建遊戲</span> 或 <span class="text-pink-400">上傳檔案</span></p>
+                    <p class="text-xs mt-2 text-yellow-500">
+                        提示：遊戲啟動後，手機<span class="font-bold text-white">轉橫</span>可自動全螢幕遊玩。
+                    </p>
+                </div>
+                <div class="text-xs md:text-sm text-gray-500 border border-gray-700 p-2 rounded bg-black/50 w-full max-w-sm overflow-hidden text-ellipsis whitespace-nowrap">
+                    狀態: <span id="status-text">等待選擇...</span>
+                </div>
+            </div>
+
+            <div id="game"></div>
+        </div>
+
+        <div class="control-panel rounded-lg p-4 md:p-6 w-full text-white mb-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                
+                <!-- 遊戲來源選擇區 -->
+                <div class="space-y-4">
+                    <label class="block text-xs md:text-sm font-bold text-yellow-400 uppercase tracking-wider">
+                        1. 選擇遊戲 (Game Source)
+                    </label>
+                    
+                    <!-- 方式 A: 伺服器列表 -->
+                    <div class="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                        <label class="block text-xs text-gray-400 mb-2">A. 選擇內建遊戲 (Server ROMs)</label>
+                        <select id="server-rom-select" class="bg-gray-900 text-white border border-gray-600 text-sm rounded-lg focus:ring-yellow-500 focus:border-yellow-500 block w-full p-2.5">
+                            <option value="">-- 請選擇 (已上傳至伺服器) --</option>
+                            <!-- JS 會自動填入選項 -->
+                        </select>
+                        <!-- 新增：提示文字 -->
+                        <p class="text-[10px] text-gray-500 mt-2 ml-1">
+                            * 注意：列表中的遊戲需確認已將對應的 <span class="font-mono text-yellow-500 bg-gray-900 px-1 rounded">.zip</span> 檔上傳至網站根目錄。
+                        </p>
+                    </div>
+
+                    <div class="relative flex py-1 items-center">
+                        <div class="flex-grow border-t border-gray-700"></div>
+                        <span class="flex-shrink-0 mx-4 text-gray-600 text-xs">或是 (OR)</span>
+                        <div class="flex-grow border-t border-gray-700"></div>
+                    </div>
+
+                    <!-- 方式 B: 本地上傳 -->
+                    <div class="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                        <label class="block text-xs text-gray-400 mb-2">B. 上傳本地檔案 (Local Upload)</label>
+                        <input type="file" id="rom-upload" accept=".zip,.7z,.nes,.sfc,.smc,.bin,.md,.gba" class="block w-full text-xs text-gray-400
+                            file:bg-pink-700 file:text-white
+                            hover:file:bg-pink-600
+                        "/>
+                    </div>
+                </div>
+
+                <!-- 模擬器設定與啟動 -->
+                <div class="space-y-4">
+                    <label class="block text-xs md:text-sm font-bold text-cyan-400 uppercase tracking-wider">
+                        2. 啟動設定 (Settings)
+                    </label>
+                    
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">模擬器核心 (Core)</label>
+                            <select id="core-select" class="bg-gray-800 text-white border border-gray-600 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <optgroup label="街機 (Arcade)">
+                                    <option value="fbneo" selected>FinalBurn Neo (CPS1/2/3, NeoGeo, 推薦)</option>
+                                    <option value="mame2003plus">MAME 2003 Plus (舊版街機)</option>
+                                </optgroup>
+                                <optgroup label="家用機 (Console)">
+                                    <option value="fceumm">NES (任天堂/紅白機)</option>
+                                    <option value="snes9x">SNES (超級任天堂)</option>
+                                    <option value="genesis_plus_gx">Genesis (世嘉五代)</option>
+                                    <option value="gba">GBA (GameBoy Advance)</option>
+                                </optgroup>
+                            </select>
+                        </div>
+
+                        <button id="start-btn" disabled class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-lg transition shadow-lg disabled:opacity-30 disabled:cursor-not-allowed text-sm md:text-base flex items-center justify-center gap-2">
+                            <span>啟動遊戲 (START)</span>
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path></svg>
+                        </button>
+                    </div>
+
+                    <div class="text-xs text-gray-500 mt-2">
+                        <p id="hint-text">請先選擇遊戲來源。</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 操作說明 -->
+            <div class="mt-6 pt-4 border-t border-gray-700 text-xs text-gray-400">
+                <div class="hidden md:grid grid-cols-4 gap-4">
+                    <div><span class="text-white font-bold">投幣 (Coin):</span> Shift</div>
+                    <div><span class="text-white font-bold">開始 (Start):</span> Enter</div>
+                    <div><span class="text-white font-bold">移動:</span> 方向鍵</div>
+                    <div><span class="text-white font-bold">按鍵:</span> Z, X, A, S</div>
+                </div>
+                <div class="md:hidden text-center text-gray-500">
+                    <p>手機橫向遊玩時，請使用螢幕上的虛擬搖桿。</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // ==========================================
+        //  遊戲列表設定
+        //  提示：這些檔案需真實存在於伺服器上
+        // ==========================================
+        const serverGames = [
+            { group: "CAPCOM 經典動作 (CPS1/CPS2)", games: [
+                { name: "吞食天地1 (Dynasty Wars)", file: "dynwar.zip" },
+                { name: "吞食天地2: 赤壁之戰 (Warriors of Fate)", file: "wof.zip" },
+                { name: "恐龍快打 (Cadillacs and Dinosaurs)", file: "dino.zip" },
+                { name: "圓桌武士 (Knights of the Round)", file: "knights.zip" },
+                { name: "懲罰者 (The Punisher)", file: "punisher.zip" },
+                { name: "名將 (Captain Commando)", file: "captcomm.zip" }
+            ]},
+            { group: "格鬥天王 (NeoGeo)", games: [
+                { name: "格鬥天王 97 (KOF '97)", file: "kof97.zip" },
+                { name: "格鬥天王 98 (KOF '98)", file: "kof98.zip" },
+                { name: "格鬥天王 2002 (KOF 2002)", file: "kof2002.zip" }
+            ]},
+            { group: "快打旋風 (Street Fighter)", games: [
+                { name: "快打旋風 2 (Street Fighter II)", file: "sf2.zip" },
+                { name: "超級快打旋風 2 (Super SF2)", file: "ssf2.zip" }
+            ]},
+            { group: "越南大戰 (Metal Slug)", games: [
+                { name: "合金彈頭 1 (Metal Slug)", file: "mslug.zip" },
+                { name: "合金彈頭 2 (Metal Slug 2)", file: "mslug2.zip" },
+                { name: "合金彈頭 X (Metal Slug X)", file: "mslugx.zip" },
+                { name: "合金彈頭 3 (Metal Slug 3)", file: "mslug3.zip" }
+            ]},
+            { group: "經典射擊/其他", games: [
+                { name: "雪人兄弟 (Snow Bros)", file: "snowbros.zip" },
+                { name: "彩京 1945 II (Strikers 1945 II)", file: "s1945ii.zip" },
+                { name: "雷電 (Raiden)", file: "raiden.zip" }
+            ]}
+        ];
+
+        // DOM 元素
+        const romInput = document.getElementById('rom-upload');
+        const serverSelect = document.getElementById('server-rom-select');
+        const startBtn = document.getElementById('start-btn');
+        const statusText = document.getElementById('status-text');
+        const hintText = document.getElementById('hint-text');
+        const placeholderScreen = document.getElementById('placeholder-screen');
+        const coreSelect = document.getElementById('core-select');
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const screenWrapper = document.getElementById('screen-wrapper');
+        const floatingExitBtn = document.getElementById('floating-exit-btn');
+
+        // 狀態變數
+        let gameUrl = null;
+        let emulatorScriptLoaded = false;
+
+        // 初始化：產生內建遊戲選單 (支援分組)
+        function initServerGames() {
+            serverGames.forEach(group => {
+                const optgroup = document.createElement('optgroup');
+                // 新增：在群組標籤上標註需上傳
+                optgroup.label = `📂 ${group.group} (需將檔案上傳至伺服器)`;
+                group.games.forEach(game => {
+                    const option = document.createElement('option');
+                    option.value = game.file;
+                    option.textContent = game.name;
+                    optgroup.appendChild(option);
+                });
+                serverSelect.appendChild(optgroup);
+            });
+        }
+        initServerGames();
+
+        // --- 核心智慧判斷邏輯 ---
+        function autoSelectCore(fileName) {
+            const name = fileName.toLowerCase();
+            let suggestedCore = 'fbneo'; // 預設街機
+            let coreName = "FinalBurn Neo";
+
+            // 根據副檔名判斷
+            if (name.endsWith('.nes')) {
+                suggestedCore = 'fceumm';
+                coreName = "NES (FCEUmm)";
+            } else if (name.endsWith('.sfc') || name.endsWith('.smc')) {
+                suggestedCore = 'snes9x';
+                coreName = "SNES (Snes9x)";
+            } else if (name.endsWith('.gba')) {
+                suggestedCore = 'gba';
+                coreName = "GBA";
+            } else if (name.endsWith('.md') || name.endsWith('.bin') || name.endsWith('.gen')) {
+                suggestedCore = 'genesis_plus_gx';
+                coreName = "Genesis";
+            } 
+            // 根據街機檔名判斷 (zip)
+            else {
+                // 大部分常見街機用 fbneo 最好，少部分老遊戲可能需要 mame2003plus
+                // 這裡預設 fbneo，因為列表中的遊戲 (CPS, NeoGeo) 都是 fbneo 強項
+                suggestedCore = 'fbneo';
+                coreName = "FinalBurn Neo";
+            }
+
+            // 更新 UI
+            coreSelect.value = suggestedCore;
+            hintText.innerHTML = `已自動選擇核心：<span class="text-green-400 font-bold">${coreName}</span>`;
+            
+            // 加入特效提示
+            coreSelect.classList.add('ring-2', 'ring-green-500');
+            setTimeout(() => coreSelect.classList.remove('ring-2', 'ring-green-500'), 1000);
+        }
+
+        // 處理內建遊戲選擇
+        serverSelect.addEventListener('change', (e) => {
+            const selectedFile = e.target.value;
+            if (selectedFile) {
+                romInput.value = ''; // 清除本地選擇
+                gameUrl = selectedFile;
+                
+                const selectedText = e.target.options[e.target.selectedIndex].text;
+                statusText.innerText = `已選擇內建: ${selectedText}`;
+                statusText.className = 'text-yellow-400 font-bold';
+                
+                // 自動判斷核心
+                autoSelectCore(selectedFile);
+                startBtn.disabled = false;
+            } else {
+                resetSelection();
+            }
+        });
+
+        // 處理本地檔案上傳
+        romInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                serverSelect.value = ""; // 清除內建選擇
+                gameUrl = URL.createObjectURL(file);
+                
+                statusText.innerText = `已載入本地: ${file.name}`;
+                statusText.className = 'text-pink-400 font-bold';
+                
+                // 自動判斷核心
+                autoSelectCore(file.name);
+                startBtn.disabled = false;
+            } else {
+                resetSelection();
+            }
+        });
+
+        function resetSelection() {
+            gameUrl = null;
+            startBtn.disabled = true;
+            statusText.innerText = "等待選擇...";
+            statusText.className = "";
+            hintText.innerText = "請選擇遊戲來源。";
+        }
+
+        // 啟動模擬器
+        startBtn.addEventListener('click', function() {
+            if (!gameUrl) return;
+
+            // 標記遊戲正在運行
+            document.body.classList.add('game-running');
+            
+            // 啟動時也強制鎖定捲動 (如果進入手動全螢幕)
+            // checkOrientationAndFullscreen 稍後會處理橫屏的狀態
+
+            placeholderScreen.style.display = 'none';
+            statusText.innerText = "正在啟動...";
+
+            const selectedCore = coreSelect.value;
+            
+            window.EJS_player = '#game';
+            window.EJS_core = selectedCore; 
+            window.EJS_gameUrl = gameUrl;
+            window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+            
+            if (!emulatorScriptLoaded) {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
+                script.async = true;
+                script.onload = () => {
+                    emulatorScriptLoaded = true;
+                    console.log("EmulatorJS Core Loaded");
+                };
+                document.body.appendChild(script);
+            } else {
+                if(confirm("切換遊戲建議重新整理頁面以避免錯誤。是否刷新頁面？")) {
+                    location.reload();
+                } else {
+                     try { window.EJS_Emulator.destroy(); } catch(e){}
+                }
+            }
+        });
+
+        // --- 全螢幕與方向控制邏輯 ---
+
+        // 進入全螢幕 (手動或自動)
+        function enterFullscreen() {
+            screenWrapper.classList.add('fullscreen-mode');
+            fullscreenBtn.innerText = "退出全螢幕";
+            fullscreenBtn.classList.add('bg-red-600');
+            document.body.classList.add('lock-scroll'); // 鎖定捲動
+            
+            // 嘗試原生全螢幕 API (Android/Desktop)
+            if (document.documentElement.requestFullscreen) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            }
+            
+            // 強制重繪 Canvas 以適配新尺寸
+            setTimeout(() => {
+                 if(window.dispatchEvent) window.dispatchEvent(new Event('resize'));
+            }, 300);
+        }
+
+        // 退出全螢幕
+        function exitFullscreen() {
+            screenWrapper.classList.remove('fullscreen-mode');
+            fullscreenBtn.innerText = "全螢幕模式";
+            fullscreenBtn.classList.remove('bg-red-600');
+            
+            // 只有在非橫屏自動模式下才移除鎖定
+            // (如果是橫屏狀態，CSS 會強制隱藏捲動，這裡 JS 移除類別不影響橫屏的 CSS 規則)
+            document.body.classList.remove('lock-scroll');
+
+            if (document.exitFullscreen) {
+                document.exitFullscreen().catch(() => {});
+            }
+            
+            // 強制重繪
+            setTimeout(() => {
+                 if(window.dispatchEvent) window.dispatchEvent(new Event('resize'));
+            }, 300);
+        }
+
+        // 懸浮按鈕：點擊後退出全螢幕
+        floatingExitBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // 防止點擊穿透
+            
+            // 如果是橫屏自動全螢幕，這時候退出意味著我們可能想要暫時看下網頁其他內容
+            // 但因為橫屏 CSS 是寫死的 (media query)，我們需要一個方法暫時打破它
+            // 這裡簡單處理：直接呼叫 exitFullscreen() 去除 fullscreen-mode class
+            // 對於橫屏自動全螢幕，我們需要移除 'game-running' class 才能恢復顯示其他 UI?
+            // 不，使用者通常是想調整設定或換遊戲。
+            
+            // 策略：如果是在橫屏模式下點擊退出，我們移除 'game-running' 狀態來顯示 Header/Footer
+            // 但這樣會停止自動全螢幕效果。
+            
+            if (window.innerWidth > window.innerHeight) {
+                 // 橫屏時，暫時移除遊戲運行狀態標記，讓 UI 回來
+                 // 注意：這不會關閉遊戲，只是讓 CSS media query 失效
+                 if(document.body.classList.contains('game-running')) {
+                     // 提示用戶：這會回到正常網頁視圖
+                     document.body.classList.remove('game-running');
+                 }
+            }
+            
+            exitFullscreen();
+        });
+
+        // 頂部按鈕 (手動切換)
+        fullscreenBtn.addEventListener('click', () => {
+            if (screenWrapper.classList.contains('fullscreen-mode')) {
+                exitFullscreen();
+            } else {
+                enterFullscreen();
+            }
+        });
+        
+        // 監聽螢幕旋轉/調整大小
+        window.addEventListener('resize', () => {
+             // 確保尺寸變化時通知模擬器重繪
+             // EmulatorJS 內部通常會監聽 resize，但有時候 CSS transition 會導致時序問題
+        });
+
+        // 拖放防誤觸
+        window.addEventListener('dragover', (e) => e.preventDefault());
+        window.addEventListener('drop', (e) => e.preventDefault());
+
+    </script>
+</body>
+</html>
